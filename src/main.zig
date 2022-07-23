@@ -34,6 +34,15 @@ test "encode" {
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11011, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00 }, try encode(u64, allocator, 4_294_967_296));
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11011, 0x00, 0x00, 0x01, 0x17, 0x77, 0x7A, 0x9F, 0x74 }, try encode(u64, allocator, 1_200_300_400_500));
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11011, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }, try encode(u64, allocator, 0xFFFFFFFFFFFFFFFF));
+
+    // Negative integers
+    try t.expectEqualSlices(u8, &[_]u8{0b001_00000}, try encode(i5, allocator, -1));
+    try t.expectEqualSlices(u8, &[_]u8{0b001_01101}, try encode(i5, allocator, -14));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b001_11000, 0x3E }, try encode(i8, allocator, -63));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b001_11000, 0x7E }, try encode(i8, allocator, -127));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b001_11001, 0x00, 0xFE }, try encode(i16, allocator, -255));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b001_11010, 0x00, 0x12, 0x50, 0xAB }, try encode(i32, allocator, -1_200_300));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b001_11011, 0x00, 0x00, 0x01, 0x17, 0x77, 0x7A, 0x9F, 0x73 }, try encode(i64, allocator, -1_200_300_400_500));
 }
 
 /// Allocates a buffer and serializes the type using CBOR encoding into it. The caller
@@ -47,20 +56,32 @@ pub fn encode(comptime T: type, allocator: Allocator, value: T) ![]u8 {
     return data;
 }
 
+/// Types of data supported by CBOR.
+const MajorType = enum(u3) { UnsignedInt = 0, NegativeInt = 1 };
+
 /// Integers greater than 2^5 will use this value as the lower of bytes, increased
-/// by one for every additional byte they use.
+/// by one for every additional ^2 of bytes they require.
 const int_additional_info_bytes_starting_index = 23;
 
 fn writeValue(comptime T: type, value: T, data: []u8) void {
     switch (@typeInfo(T)) {
         .Int => |typeInfo| {
+            var value_to_write = value;
+
+            if (typeInfo.signedness == .signed and value < 0) {
+                data[0] = @intCast(u8, @enumToInt(MajorType.NegativeInt)) << 5;
+                value_to_write = absv(T, value) - 1;
+            } else {
+                data[0] = 0;
+            }
+
             switch (typeInfo.bits) {
                 0...5 => {
-                    data[0] = @intCast(u5, value);
+                    data[0] |= @bitCast(u5, value_to_write);
                 },
                 else => {
                     const size = @divExact(typeInfo.bits, 8);
-                    data[0] = int_additional_info_bytes_starting_index + switch (size) {
+                    data[0] |= int_additional_info_bytes_starting_index + switch (size) {
                         1 => 1,
                         2 => 2,
                         4 => 3,
@@ -68,7 +89,7 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
                         else => @compileError("Unsupported integer type: " ++ typeInfo),
                     };
 
-                    std.mem.writeIntBig(T, data[1 .. size + 1], value);
+                    std.mem.writeIntBig(T, data[1 .. size + 1], value_to_write);
                 },
             }
         },
@@ -97,6 +118,32 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
         .Vector => @compileError("Vector types not supported."),
         .Void => @compileError("Void types not supported."),
     }
+}
+
+/// Taken from the Zig compiler:
+///
+///   https://github.com/ziglang/zig/blob/74442f35030a9c4f4ff65db01a18e8fb2f2a1ecf/lib/compiler_rt/absv.zig
+///
+pub inline fn absv(comptime ST: type, a: ST) ST {
+    const UT = switch (ST) {
+        i5 => u5,
+        i8 => u8,
+        i16 => u16,
+        i32 => u32,
+        i64 => u64,
+        i128 => u128,
+        else => unreachable,
+    };
+    // taken from  Bit Twiddling Hacks
+    // compute the integer absolute value (abs) without branching
+    var x: ST = a;
+    const N: UT = @bitSizeOf(ST);
+    const sign: ST = a >> N - 1;
+    x +%= sign;
+    x ^= sign;
+    if (x < 0)
+        @panic("compiler_rt absv: overflow");
+    return x;
 }
 
 test "cborSize" {
