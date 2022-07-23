@@ -19,9 +19,12 @@ test "encode" {
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11000, 0x18 }, try encode(u8, allocator, 24));
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11000, 0x7D }, try encode(u8, allocator, 125));
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11000, 0xFF }, try encode(u8, allocator, 255));
-}
 
-const cbor_endianness = std.builtin.Endian.Big;
+    // uint16_t
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11001, 0x01, 0x00 }, try encode(u16, allocator, 256));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11001, 0x7A, 0xF0 }, try encode(u16, allocator, 31472));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11001, 0xFF, 0xFF }, try encode(u16, allocator, 65535));
+}
 
 /// Allocates a buffer and serializes the type using CBOR encoding into it. The caller
 /// ownes the memory.
@@ -29,12 +32,19 @@ pub fn encode(comptime T: type, allocator: Allocator, value: T) ![]u8 {
     const total_size = cborSize(T, value);
     const data = try allocator.alloc(u8, total_size);
 
-    encodeValue(T, value, data);
+    writeValue(T, value, data);
 
     return data;
 }
 
-fn encodeValue(comptime T: type, value: T, data: []u8) void {
+/// Integers greater than 2^5 will use this value as the lower of bytes, increased
+/// by one for every additional byte they use.
+const int_additional_info_bytes_starting_index = 23;
+
+/// CBOR uses Big endian.
+const cbor_endianness = std.builtin.Endian.Big;
+
+fn writeValue(comptime T: type, value: T, data: []u8) void {
     switch (@typeInfo(T)) {
         .Int => |typeInfo| {
             switch (typeInfo.bits) {
@@ -42,10 +52,10 @@ fn encodeValue(comptime T: type, value: T, data: []u8) void {
                     data[0] = @intCast(u5, value);
                 },
                 else => {
-                    data[0] = 0b000_11000;
+                    const size = @divExact(typeInfo.bits, 8);
+                    data[0] = int_additional_info_bytes_starting_index + size;
 
-                    const size = @divExact(typeInfo.bits, 8) + 1;
-                    std.mem.writeInt(T, data[1..size], value, cbor_endianness);
+                    std.mem.writeInt(T, data[1 .. size + 1], value, cbor_endianness);
                 },
             }
         },
