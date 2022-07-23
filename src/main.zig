@@ -13,6 +13,7 @@ test "encode" {
     // Inline u5
     try t.expectEqualSlices(u8, &[_]u8{0b000_00000}, try encode(usize, allocator, 0));
     try t.expectEqualSlices(u8, &[_]u8{0b000_00011}, try encode(usize, allocator, 3));
+    try t.expectEqualSlices(u8, &[_]u8{0b000_10111}, try encode(usize, allocator, 23));
 }
 
 const cbor_endianness = std.builtin.Endian.Big;
