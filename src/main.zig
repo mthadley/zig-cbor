@@ -24,6 +24,11 @@ test "encode" {
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11001, 0x01, 0x00 }, try encode(u16, allocator, 256));
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11001, 0x7A, 0xF0 }, try encode(u16, allocator, 31472));
     try t.expectEqualSlices(u8, &[_]u8{ 0b000_11001, 0xFF, 0xFF }, try encode(u16, allocator, 65535));
+
+    // uint32_t
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11010, 0x00, 0x01, 0x00, 0x00 }, try encode(u32, allocator, 65536));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11010, 0x00, 0x12, 0x50, 0xAC }, try encode(u32, allocator, 1_200_300));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11010, 0xFF, 0xFF, 0xFF, 0xFF }, try encode(u32, allocator, 4_294_967_295));
 }
 
 /// Allocates a buffer and serializes the type using CBOR encoding into it. The caller
@@ -53,7 +58,13 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
                 },
                 else => {
                     const size = @divExact(typeInfo.bits, 8);
-                    data[0] = int_additional_info_bytes_starting_index + size;
+                    data[0] = int_additional_info_bytes_starting_index + switch (size) {
+                        1 => 1,
+                        2 => 2,
+                        4 => 3,
+                        8 => 4,
+                        else => @compileError("Unsupported integer type: " ++ typeInfo),
+                    };
 
                     std.mem.writeInt(T, data[1 .. size + 1], value, cbor_endianness);
                 },
