@@ -11,26 +11,33 @@ test "encode" {
     const allocator = std.heap.page_allocator;
 
     // Inline u5
-    try t.expectEqualSlices(u8, &[_]u8{0b000_00000}, try encode(usize, allocator, 0));
-    try t.expectEqualSlices(u8, &[_]u8{0b000_00011}, try encode(usize, allocator, 3));
-    try t.expectEqualSlices(u8, &[_]u8{0b000_10111}, try encode(usize, allocator, 23));
+    try t.expectEqualSlices(u8, &[_]u8{0b000_00000}, try encode(u5, allocator, 0));
+    try t.expectEqualSlices(u8, &[_]u8{0b000_00011}, try encode(u5, allocator, 3));
+    try t.expectEqualSlices(u8, &[_]u8{0b000_10111}, try encode(u5, allocator, 23));
+
+    // uint8_t
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11000, 0x18 }, try encode(u8, allocator, 24));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11000, 0x7D }, try encode(u8, allocator, 125));
+    try t.expectEqualSlices(u8, &[_]u8{ 0b000_11000, 0xFF }, try encode(u8, allocator, 255));
 }
 
 const cbor_endianness = std.builtin.Endian.Big;
 
 fn encode(comptime T: type, allocator: Allocator, value: T) ![]u8 {
     switch (@typeInfo(T)) {
-        .Int => {
-            switch (value) {
-                0...23 => {
+        .Int => |typeInfo| {
+            switch (typeInfo.bits) {
+                0...5 => {
                     const data = try allocator.alloc(u8, 1);
                     data[0] = @intCast(u5, value);
 
                     return data;
                 },
                 else => {
-                    const size = @sizeOf(T) + 1;
+                    const size = @divExact(typeInfo.bits, 8) + 1;
+
                     const data = try allocator.alloc(u8, size);
+                    data[0] = 0b000_11000;
 
                     std.mem.writeInt(T, data[1..size], value, cbor_endianness);
 
