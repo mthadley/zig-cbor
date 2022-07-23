@@ -46,9 +46,6 @@ pub fn encode(comptime T: type, allocator: Allocator, value: T) ![]u8 {
 /// by one for every additional byte they use.
 const int_additional_info_bytes_starting_index = 23;
 
-/// CBOR uses Big endian.
-const cbor_endianness = std.builtin.Endian.Big;
-
 fn writeValue(comptime T: type, value: T, data: []u8) void {
     switch (@typeInfo(T)) {
         .Int => |typeInfo| {
@@ -66,7 +63,7 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
                         else => @compileError("Unsupported integer type: " ++ typeInfo),
                     };
 
-                    std.mem.writeInt(T, data[1 .. size + 1], value, cbor_endianness);
+                    std.mem.writeIntBig(T, data[1 .. size + 1], value);
                 },
             }
         },
