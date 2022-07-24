@@ -43,6 +43,9 @@ test "encode" {
     try t.expectEqualSlices(u8, &[_]u8{ 0b001_11001, 0x00, 0xFE }, try encode(i16, allocator, -255));
     try t.expectEqualSlices(u8, &[_]u8{ 0b001_11010, 0x00, 0x12, 0x50, 0xAB }, try encode(i32, allocator, -1_200_300));
     try t.expectEqualSlices(u8, &[_]u8{ 0b001_11011, 0x00, 0x00, 0x01, 0x17, 0x77, 0x7A, 0x9F, 0x73 }, try encode(i64, allocator, -1_200_300_400_500));
+
+    // Byte strings
+    // try t.expectEqualSlices(u8, &[_]u8{0b010_00001}, try encode([1]u8, allocator, [_]u8{0x23}));
 }
 
 /// Allocates a buffer and serializes the type using CBOR encoding into it. The caller
@@ -57,36 +60,43 @@ pub fn encode(comptime T: type, allocator: Allocator, value: T) ![]u8 {
 }
 
 /// Types of data supported by CBOR.
-const MajorType = enum(u3) { UnsignedInt = 0, NegativeInt = 1 };
+const MajorType = enum(u3) { UnsignedInt = 0, NegativeInt = 1, ByteString = 2 };
 
 /// Integers greater than 2^5 will use this value as the lower of bytes, increased
 /// by one for every additional ^2 of bytes they require.
 const int_additional_info_bytes_starting_index = 23;
 
+/// Number of bytes used for metadata about a MajorType value, if it doesn't fit in
+/// in a single byte.
+const header_byte_size = 1;
+
 fn writeValue(comptime T: type, value: T, data: []u8) void {
     switch (@typeInfo(T)) {
-        .Int => |typeInfo| {
+        .Array => {
+            @compileError("asdasd");
+        },
+        .Int => |type_info| {
             var value_to_write = value;
 
-            if (typeInfo.signedness == .signed and value < 0) {
+            if (type_info.signedness == .signed and value < 0) {
                 data[0] = @intCast(u8, @enumToInt(MajorType.NegativeInt)) << 5;
                 value_to_write = absv(T, value) - 1;
             } else {
                 data[0] = 0;
             }
 
-            switch (typeInfo.bits) {
+            switch (type_info.bits) {
                 0...5 => {
                     data[0] |= @bitCast(u5, value_to_write);
                 },
                 else => {
-                    const size = @divExact(typeInfo.bits, 8);
+                    const size = @divExact(type_info.bits, 8);
                     data[0] |= int_additional_info_bytes_starting_index + switch (size) {
                         1 => 1,
                         2 => 2,
                         4 => 3,
                         8 => 4,
-                        else => @compileError("Unsupported integer type: " ++ typeInfo),
+                        else => @compileError("Unsupported integer type: " ++ type_info),
                     };
 
                     std.mem.writeIntBig(T, data[1 .. size + 1], value_to_write);
@@ -94,7 +104,6 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
             }
         },
         .AnyFrame => @compileError("AnyFrame types not supported."),
-        .Array => @compileError("Array types not supported."),
         .Bool => @compileError("Bool types not supported."),
         .BoundFn => @compileError("BoundFn types not supported."),
         .ComptimeFloat => @compileError("ComptimeFloat types not supported."),
@@ -153,21 +162,80 @@ test "cborSize" {
     try t.expectEqual(@as(usize, 3), cborSize(u16, 532));
     try t.expectEqual(@as(usize, 5), cborSize(u32, 1_200_300));
     try t.expectEqual(@as(usize, 9), cborSize(u64, 8_000_000));
+
+    // Array of bytes
+    try t.expectEqual(@as(usize, 2), cborSize([1]u8, [_]u8{0x23}));
+    try t.expectEqual(@as(usize, 4), cborSize([3]u8, [_]u8{ 0x23, 0x12, 0x05 }));
+    try t.expectEqual(@as(usize, 24), cborSize([23]u8, [_]u8{0} ** 23));
+    try t.expectEqual(@as(usize, 26), cborSize([24]u8, [_]u8{0} ** 24));
+
+    // Array of u32
+    try t.expectEqual(@as(usize, 6), cborSize([1]u32, [_]u32{0x23}));
+    try t.expectEqual(@as(usize, 16), cborSize([3]u32, [_]u32{ 0x23, 0x12, 0x05 }));
 }
 
 /// Number of bytes needed to represent the type using CBOR encoding.
 fn cborSize(comptime T: type, value: T) usize {
-    _ = value;
-
     switch (@typeInfo(T)) {
-        .Int => |typeInfo| {
-            return switch (typeInfo.bits) {
-                0...5 => 1,
-                else => @divExact(typeInfo.bits, 8) + 1,
+        .Array => |type_info| {
+            return header_byte_size + switch (@typeInfo(type_info.child)) {
+                .Int => |int_type_info| ret: {
+                    const additional_data_size = switch (type_info.len) {
+                        0...23 => 0,
+                        24...255 => 1,
+                        256...65535 => 2,
+                        65_536...4_294_967_295 => 3,
+                        else => 4,
+                    };
+
+                    break :ret additional_data_size + type_info.len *
+                        if (int_type_info.signedness == .unsigned and int_type_info.bits <= 8) 1 else cborSizeStatic(type_info.child);
+                },
+                else => ret: {
+                    var total: usize = 0;
+                    for (value) |child_value| total += cborSize(type_info.child, child_value);
+                    break :ret total;
+                },
             };
         },
+        .Int => return cborSizeStatic(T),
         .AnyFrame => @compileError("AnyFrame types not supported."),
-        .Array => @compileError("Array types not supported."),
+        .Bool => @compileError("Bool types not supported."),
+        .BoundFn => @compileError("BoundFn types not supported."),
+        .ComptimeFloat => @compileError("ComptimeFloat types not supported."),
+        .ComptimeInt => @compileError("ComptimeInt types not supported."),
+        .Enum => @compileError("Enum types not supported."),
+        .EnumLiteral => @compileError("EnumLiteral types not supported."),
+        .ErrorSet => @compileError("ErrorSet types not supported."),
+        .ErrorUnion => @compileError("ErrorUnion types not supported."),
+        .Float => @compileError("Float types not supported."),
+        .Fn => @compileError("Fn types not supported."),
+        .Frame => @compileError("Frame types not supported."),
+        .NoReturn => @compileError("NoReturn types not supported."),
+        .Null => @compileError("Null types not supported."),
+        .Opaque => @compileError("Opaque types not supported."),
+        .Optional => @compileError("Optional types not supported."),
+        .Pointer => @compileError("Pointer types not supported."),
+        .Struct => @compileError("Struct types not supported."),
+        .Type => @compileError("Type types not supported."),
+        .Undefined => @compileError("Undefined types not supported."),
+        .Union => @compileError("Union types not supported."),
+        .Vector => @compileError("Vector types not supported."),
+        .Void => @compileError("Void types not supported."),
+    }
+}
+
+/// Compile-time known number of bytes needed to represent the type using CBOR encoding.
+fn cborSizeStatic(comptime T: type) usize {
+    switch (@typeInfo(T)) {
+        .Int => |type_info| {
+            return switch (type_info.bits) {
+                0...5 => 1,
+                else => header_byte_size + @divExact(type_info.bits, 8),
+            };
+        },
+        .Array => @compileError("Array types not suppored."),
+        .AnyFrame => @compileError("AnyFrame types not supported."),
         .Bool => @compileError("Bool types not supported."),
         .BoundFn => @compileError("BoundFn types not supported."),
         .ComptimeFloat => @compileError("ComptimeFloat types not supported."),
