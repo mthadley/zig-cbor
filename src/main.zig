@@ -76,14 +76,17 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
             @compileError("asdasd");
         },
         .Int => |type_info| {
-            var value_to_write = value;
+            const WriteType = @Type(.{ .Int = .{ .bits = type_info.bits, .signedness = .unsigned } });
+
+            var value_to_write: WriteType = std.math.absCast(value);
+            var major_type = MajorType.UnsignedInt;
 
             if (type_info.signedness == .signed and value < 0) {
-                data[0] = @intCast(u8, @enumToInt(MajorType.NegativeInt)) << 5;
-                value_to_write = absv(T, value) - 1;
-            } else {
-                data[0] = 0;
+                value_to_write -= 1;
+                major_type = MajorType.NegativeInt;
             }
+
+            data[0] = @intCast(u8, @enumToInt(major_type)) << 5;
 
             switch (type_info.bits) {
                 0...5 => {
@@ -99,7 +102,7 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
                         else => @compileError("Unsupported integer type: " ++ type_info),
                     };
 
-                    std.mem.writeIntBig(T, data[1 .. size + 1], value_to_write);
+                    std.mem.writeIntBig(WriteType, data[1 .. size + 1], value_to_write);
                 },
             }
         },
@@ -127,32 +130,6 @@ fn writeValue(comptime T: type, value: T, data: []u8) void {
         .Vector => @compileError("Vector types not supported."),
         .Void => @compileError("Void types not supported."),
     }
-}
-
-/// Taken from the Zig compiler:
-///
-///   https://github.com/ziglang/zig/blob/74442f35030a9c4f4ff65db01a18e8fb2f2a1ecf/lib/compiler_rt/absv.zig
-///
-pub inline fn absv(comptime ST: type, a: ST) ST {
-    const UT = switch (ST) {
-        i5 => u5,
-        i8 => u8,
-        i16 => u16,
-        i32 => u32,
-        i64 => u64,
-        i128 => u128,
-        else => unreachable,
-    };
-    // taken from  Bit Twiddling Hacks
-    // compute the integer absolute value (abs) without branching
-    var x: ST = a;
-    const N: UT = @bitSizeOf(ST);
-    const sign: ST = a >> N - 1;
-    x +%= sign;
-    x ^= sign;
-    if (x < 0)
-        @panic("compiler_rt absv: overflow");
-    return x;
 }
 
 test "cborSize" {
